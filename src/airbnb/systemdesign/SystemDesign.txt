@@ -1,0 +1,63 @@
+1. Design Translation System
+
+Firstly, need to consider two examples:
+    - Eng to Japan, will increase the length of a string, how to configure the layout;
+    - For Arabic, people are reading from right to left. How to deal with it?
+
+翻译系统大体分为三个部分: 1. UI (front end)， 2. translation service (middle layer), 3. translator portal，
+这三部分在一起最后会做出完整的version (web/app)发给client，要么是给app store的app package，
+要么是转换成网页发给用户（或者CDN for scalability reason)
+
+1) UI部分: front-end developer和designer通常不用去理会如何翻译，他们主要做的是修改ui，这个过程中可能会增加，修改，删除一些文字
+（比如一个按键的label，比如增加新的网页和目录的标题etc)
+，他们的任务是确定网页和app这些UI用主语言（比如英语）是没问题的，通常这些修改之后，会提交给translation service...
+提交的东西你可以理解成是一整套resource文件，里面包含所有的ui相关的文字资料，标注了这是哪个Version，
+有哪些ui (key-value, where key represent ui variable name like "agreeButtonText", value represents actual text in English "Agree"），
+通常每个修改还会带一条介绍帮助翻译更好的理解语境，比如叫description里面会写这句话是当用户同意某个条款的时候点击同意的，
+这样翻译的人就会翻译成（同意，认同之类的），有些语言会有多义词所以这条解释很重要
+2) translation service: 当文字修改发给这个service，他负责三个部分，一个从resource文件中找出新版本中被改变的文字信息，比如有几行条款文字改了，
+或者一些button的文字改了，第二部分是把这些信息汇总（tokenlize)然后发给 Translator portal，
+可以理解成一个接受各种key-value pair的工具或者翻译平台，实际翻译发生在那里， 第三部分是当信息被翻译之后，
+汇总并声称新的resource文件给每个需要的语言，比如一开始只有en-us.resource，翻译之后这个Service会生成zh-cn.resource (中文），
+es-es.resource （西班牙语）。汇总后会连同这些语言一起发布这个版本的网页或者app (之后就是发布端了这里就不多讲）
+3) translator portal: 每个公司做多语言产品都必然会雇佣一些翻译来翻译它的产品，所以会有一个翻译平台，翻译的人不需要真实了解或者使用这个产品，
+他们需要的只是拿到一些词汇和语境介绍，然后给出相关语言的翻译，当translation service给了一系列需要翻译的词汇之后，这个平台会收录整理排序这些词汇
+（有些词汇可能是一样的，有些词汇可能更重要更急需比如一些legal文件更新），然后翻译的人从这个平台拿词，根据介绍翻译好然后发回去，
+通常可能会有一些PM或者designer会尝试把翻译好的版本自己测试一遍确定读起来通顺没问题，这要看公司的要求和产品重要性了。
+
+上面这三部分基本构成了一套翻译系统，其实没太多系统设计的概念，关于手机端，最后会生成一个主的package
+已经所有语言的Resource file发给store然后store负责转换语言生成新的package给不同语言的用户。网络段会有区别，
+可以理解成这个网页会根据不同的域名比如airbnb.jp跟Server索取日语版的网页，
+这时候server会有自己的一套生成系统自动提取翻译好的日语词汇安在对应的ui上 (eg.一个button叫agreButton, text = "$agreeButtonText"，
+他会自己找jp resource里agreeButtonText对应的值，日语的“同意”），生成网页后发给Client；Scale的考虑可以有cache这些网页到CDN,
+browser cache or even server cache，来缓解read-load...这里就用基本系统设计概念扩展就好了。
+
+主要问的是整体的System Design, 我的解法是先估算出所有翻译的容量，估算出来才几百兆，所以都可以存到Cache里面。
+然后Frontend server每个instance用memcache, Backend Server用shared Redis，Frontend 如果cache里找不到再call backend。
+面试官问的最tricky的是如果翻译更新了，如何迅速更新cache，我说用pubsub先broadcast给Backend，Backend更新好了Redis再broadcast给Frontend。
+面试官感觉对我的design非常满意，半个小时不到就结束了，然后开始愉快的吹水。
+
+1) UI side: Frond end engineers just need to care about how the UI looks like(ex framework, buttons and labels) under main
+language(English). For the web elements, its value is a phaseKey and when the website is getting rendered, front end
+framework will look for the messageValue related to the phaseKey from the translation service. There is also default values for
+ the
+phaseKeys, just for UI edit convenience when the translation is not ready. When UI want to add a new element, he just needs
+to add a new key-value pair to the page and the translation service will detect it.
+
+ 2) Translation service: This service decides what is the correct language for the phaseKey. Based on the phaseKey and and
+ language id, it will search in the database, if it can find the latest phaseKey with status verified, then we return it to
+  the frontend service. If it cannot be found, it will create one row with phaseId, default value, langId, description, status
+  and timestamp, with status initialized. Translate portal will see this and update it.
+
+3) Translate portal: This is doing the actual translation work. It reads all items besides verified ones and then list them for
+ the translators. After translators finished the work and submit, the status will be pending and then verify it. Up to now, the
+  translation work finishes.
+
+Scale:
+    1. do sharing for the translation database.
+    2. add memcache at translation service so it don't need to read from DB every time.
+    3. how to quickly update cache, if translator finished some change? Add timestamp for each item in the memcache,
+    and Every time an Airbnb translator or employee makes a request, the server checks if this timestamp is more recent than
+    its in-memory copy of translations for the request’s locale. If there is a new version of translations to download,
+    it grabs them from the translations database before responding to the request.
+    4. we can also priorartize the phases based on its visiting frequency in past 4 days.
